@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="fetch-mark-dark.png">
+    <img src="fetch-mark.png" alt="Fetch logo" width="112">
+  </picture>
+</p>
+
 # Fetch
 
 Fetch is a search and sorting tool for existing sample library.
