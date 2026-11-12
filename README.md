@@ -1,6 +1,6 @@
 # Fetch
 
-Fetch is a local search and sorting tool for existing sample library.
+Fetch is a search and sorting tool for existing sample library.
 Describe a sound in plain English, filter by instrument, genre, key, tempo or timbre,
 or search similar sounds, and drag the results into DAW.
 
