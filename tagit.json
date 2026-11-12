@@ -1,0 +1,24 @@
+{
+  "_help": [
+    "Fetch sound-feature tags. Edit freely: the names are your own labels for measured values, not trained models.",
+    "names: the words that select the tag in a search (+name). The first one is shown in columns and in Super search.",
+    "feature: centroid (spectral centre, Hz), low (share of energy below 150 Hz), flat (noisiness 0..1),",
+    "         attack (time to peak, s), tail (tail from peak to -40 dB, s).",
+    "direction: -1 = the smallest values of the feature, 1 = the largest.",
+    "share: how large a part of the library counts as the tag (0.33 = a third).",
+    "Changes take effect immediately; nothing needs to be recalculated.",
+    "(The original Finnish keys tagit / nimet / piirre / suunta / osuus also work.)"
+  ],
+  "share": 0.33,
+  "tags": [
+    {"names": ["dark", "tumma"], "feature": "centroid", "direction": -1},
+    {"names": ["bright", "kirkas"], "feature": "centroid", "direction": 1},
+    {"names": ["bass", "basso"], "feature": "low", "direction": 1},
+    {"names": ["noisy", "kohina"], "feature": "flat", "direction": 1},
+    {"names": ["tonal", "tonaalinen"], "feature": "flat", "direction": -1},
+    {"names": ["punchy", "iskevä"], "feature": "attack", "direction": -1},
+    {"names": ["soft", "pehmeä"], "feature": "attack", "direction": 1},
+    {"names": ["tight", "lyhyt"], "feature": "tail", "direction": -1},
+    {"names": ["long", "pitkä"], "feature": "tail", "direction": 1}
+  ]
+}

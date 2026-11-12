@@ -1,0 +1,14 @@
+# Python environment and caches
+.venv/
+__pycache__/
+*.pyc
+# Performance test results (machine-specific)
+testit/tulokset/
+# Old backups
+varmuuskopio-*/
+
+# Local development notes (machine-specific, read by Claude Code)
+CLAUDE.md
+
+# VST3 plugin build folder (CMake, downloaded JUCE)
+plugin/build/

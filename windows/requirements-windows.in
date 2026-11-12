@@ -1,0 +1,7 @@
+# Fetch portable (Windows) packages; versions come from windows/constraints-linux.txt (make_requirements.sh)
+torch
+transformers
+librosa
+soundfile
+numpy
+imageio-ffmpeg  # ffmpeg.exe for Windows (copied to bin\ by Setup.cmd)

@@ -1,0 +1,213 @@
+name: VST3 plugin
+
+on:
+  push:
+    paths: ["plugin/**", "windows/**", "install.sh", "*.py", "tagit.json", "savellaji_malli.npz", "tyyppi_malli.npz", "VERSION", ".github/workflows/plugin.yml"]
+  pull_request:
+    paths: ["plugin/**", "windows/**", "install.sh", "*.py", "tagit.json", "savellaji_malli.npz", "tyyppi_malli.npz", "VERSION", ".github/workflows/plugin.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: linux-x64
+          - os: windows-2022
+            name: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev ninja-build
+
+      - name: Cache downloaded dependencies (JUCE, Signalsmith)
+        uses: actions/cache@v4
+        with:
+          path: plugin/build/_deps/*-subbuild/*-populate-prefix/src
+          key: deps-${{ matrix.name }}-${{ hashFiles('plugin/CMakeLists.txt') }}
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then gen="-G Ninja"; else gen=""; fi
+          cmake -S plugin -B plugin/build $gen -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build plugin/build --config Release --parallel
+
+      - name: Offline tests
+        shell: bash
+        run: |
+          exe=plugin/build/FetchTests_artefacts/Release/FetchTests
+          [ -f "$exe.exe" ] && exe="$exe.exe"
+          "$exe" "$PWD/plugin/build/Fetch_artefacts/Release/VST3/Fetch.vst3"
+
+      - name: Upload Fetch.vst3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fetch-vst3-${{ matrix.name }}
+          # the folder above the bundle, so the download contains Fetch.vst3/ itself (without the
+          # linker's leftovers next to it on Windows)
+          path: |
+            plugin/build/Fetch_artefacts/Release/VST3/
+            !plugin/build/Fetch_artefacts/Release/VST3/*.lib
+            !plugin/build/Fetch_artefacts/Release/VST3/*.exp
+
+  # Fetch for Linux: the release package (source + the built plugin) and install.sh on four distributions
+  # in containers (packages, Python, model, service files, plugin; no desktop session there), then indexing
+  # and searching a small generated library.
+  linux-package:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Fetch-vst3-linux-x64
+          path: vst3
+      - name: Build the package
+        run: bash linux/make_release.sh vst3 out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fetch-linux-x64
+          path: out/*.tar.gz
+          compression-level: 0
+
+  linux-install:
+    needs: linux-package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "debian:trixie", "fedora:42", "archlinux:latest"]
+    container: ${{ matrix.image }}
+    steps:
+      - name: A normal user with sudo
+        run: |
+          if command -v apt-get >/dev/null; then apt-get update -q && apt-get install -y -q sudo tar gzip
+          elif command -v dnf >/dev/null; then dnf install -y sudo tar gzip
+          else pacman -Syu --noconfirm sudo tar gzip; fi
+          useradd -m tester
+          echo "tester ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/tester
+      - uses: actions/download-artifact@v4
+        with:
+          name: Fetch-linux-x64
+          path: /tmp/pkg
+      - name: install.sh
+        run: |
+          cd /tmp/pkg && tar xzf Fetch-*.tar.gz && chown -R tester /tmp/pkg
+          sudo -u tester -H bash -c 'cd /tmp/pkg/Fetch-*/ && bash install.sh'
+      - name: Index and search a small library
+        run: |
+          sudo -u tester -H bash -lc '
+            set -e
+            mkdir -p ~/s
+            for f in 110 220 440 880; do ffmpeg -loglevel error -f lavfi -i "sine=frequency=$f:duration=1" ~/s/tone_$f.wav; done
+            ffmpeg -loglevel error -f lavfi -i "anoisesrc=d=0.3:c=pink" ~/s/noise_hit.wav
+            ~/.local/bin/fetch-index ~/s
+            ~/.local/bin/samplehaku stats
+            test -d ~/.vst3/Fetch.vst3/Contents/x86_64-linux
+            test -f ~/.config/systemd/user/samplehaku-haku.service
+            test -d ~/.local/share/samplehaku/clap-text-bf16
+            echo "install + index ok"'
+
+  # Fetch portable for Windows: the zip, then the real flow on a Windows runner: Setup.cmd (Python,
+  # packages, ffmpeg, CLAP model), indexing a small library through a network path (\\localhost\C$)
+  # and the plugin's HTTP API. Uploads the zip as it was before Setup.
+  portable:
+    needs: build
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        # cuda: Setup -Cuda as on a PC with an NVIDIA card (the runner has none: the CUDA build still installs
+        # and runs on the CPU); the search service must then use the separate CPU build in torch-cpu\
+        torch: [cpu, cuda]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Fetch-vst3-windows-x64
+          path: vst3
+
+      - name: Build the package
+        run: bash windows/make_portable.sh vst3 "$RUNNER_TEMP/Fetch out"
+
+      - name: Upload the package
+        if: matrix.torch == 'cpu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fetch-portable-windows-x64
+          path: ${{ runner.temp }}/Fetch out/*.zip
+          compression-level: 0
+
+      # The installer (Inno Setup) wraps the same folder, before Setup.cmd fills it with Python
+      - name: Build the installer
+        if: matrix.torch == 'cpu'
+        run: |
+          ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          [ -x "$ISCC" ] || choco install innosetup -y --no-progress
+          PKG="$(ls -d "$RUNNER_TEMP/Fetch out"/Fetch-portable-*/ | head -1)"
+          PKG="${PKG%/}"
+          export MSYS2_ARG_CONV_EXCL="*"     # Git Bash would turn /Q and /D… into paths
+          "$ISCC" /Q "/DAppVersion=$(cat VERSION)" "/DSrc=$(cygpath -w "$PKG")" \
+                  "/DOut=$(cygpath -w "$RUNNER_TEMP/installer")" windows/fetch.iss
+          ls -la "$RUNNER_TEMP/installer"
+
+      - name: Upload the installer
+        if: matrix.torch == 'cpu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fetch-Setup-windows-x64
+          path: ${{ runner.temp }}/installer/*.exe
+          compression-level: 0
+
+      # Install and uninstall without the downloads (/NOSETUP): files, Start menu, uninstaller
+      - name: Installer smoke test
+        if: matrix.torch == 'cpu'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "$env:RUNNER_TEMP\installer\Fetch-Setup-*.exe" | Select-Object -First 1
+          $dir = Join-Path $env:RUNNER_TEMP "Fetch installed"
+          $p = Start-Process $exe.FullName -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NOSETUP", "/TASKS=", "/DIR=`"$dir`""
+          if ($p.ExitCode -ne 0) { throw "install exit code $($p.ExitCode)" }
+          foreach ($f in "app\fetch_portable.py", "app\setup.ps1", "tools\uv.exe", "VST3\Fetch.vst3\Contents\x86_64-win\Fetch.vst3", "Setup.cmd", "unins000.exe") {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "missing after install: $f" }
+          }
+          $menu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Fetch"
+          if (-not (Test-Path (Join-Path $menu "Index a sample folder.lnk"))) { throw "no Start menu entry" }
+          New-Item -ItemType Directory -Force (Join-Path $dir "data\index") | Out-Null
+          Set-Content (Join-Path $dir "data\index\keep.txt") "the user's index"
+          $p = Start-Process (Join-Path $dir "unins000.exe") -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES"
+          Start-Sleep 3
+          if (Test-Path (Join-Path $dir "app")) { throw "app\ left after uninstall" }
+          if (-not (Test-Path (Join-Path $dir "data\index\keep.txt"))) { throw "a silent uninstall must keep data\" }
+          if (Test-Path $menu) { throw "Start menu entries left" }
+          Write-Host "install + uninstall ok"
+
+      - name: Setup.cmd
+        shell: cmd
+        run: |
+          for /d %%D in ("%RUNNER_TEMP%\Fetch out\Fetch-portable-*") do set "PKG=%%D"
+          if "${{ matrix.torch }}"=="cuda" (call "%PKG%\Setup.cmd" -Quiet -Cuda || exit /b 1) else (call "%PKG%\Setup.cmd" -Quiet || exit /b 1)
+          type "%APPDATA%\Fetch\server-command.txt"
+
+      - name: Index a test library and use the service
+        shell: cmd
+        run: |
+          for /d %%D in ("%RUNNER_TEMP%\Fetch out\Fetch-portable-*") do set "PKG=%%D"
+          for /d %%D in ("%PKG%\python\cpython-3.12*") do set "PY=%%D\python.exe"
+          if "${{ matrix.torch }}"=="cuda" (set "EXTRA=--index-cpu-torch") else (set "EXTRA=")
+          "%PY%" windows\ci_test.py "%PKG%" "%RUNNER_TEMP%\Sample library" --unc %EXTRA%

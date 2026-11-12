@@ -1,0 +1,7 @@
+# Fetch on Linux (install.sh); versions come from windows/constraints-linux.txt (windows/make_requirements.sh)
+torch
+transformers
+librosa
+soundfile
+numpy
+dbus-fast
