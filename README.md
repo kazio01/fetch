@@ -1,12 +1,18 @@
 # Fetch
 
-Fetch is a local, offline search and sorting tool for an existing sample library.
+Fetch is a local search and sorting tool for existing sample library.
 Describe a sound in plain English, filter by instrument, genre, key, tempo or timbre,
-or ask for samples that sound like the one you have, and drag the results straight into your DAW.
+or search similar sounds, and drag the results into DAW.
+
+Idea of Fetch is to give every sample a soft tag. 
+That way if you have collected a bunch of random samples over the years(guilty) and some get dusty over the years. 
+Fetch will give them a new life by subtly introducing them to the rotation with tags!
+Ive had a pool of roughly 300k samples that ive used for fine tuning the detection.
+Im very interested to hearing how it works with other systems.
 
 It never modifies your sample files. All indexes, caches and settings live in your home directory.
 
-> Fetch is built for Linux with GNOME and also runs as a VST3 plugin on Windows. The NPU part is optional.
+> Fetch is built on Linux with GNOME and also runs as a VST3 plugin on Windows. The NPU part is optional.
 
 ## Features
 
