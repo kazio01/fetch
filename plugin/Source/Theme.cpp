@@ -1,5 +1,6 @@
 #include "Theme.h"
 #include "BinaryData.h"
+#include "Prefs.h"
 
 namespace theme
 {
@@ -79,13 +80,14 @@ static juce::Colour gnomeAccent (const juce::String& name)
     return juce::Colour (0xff3584e4);
 }
 
-void detectScheme (bool& isDark, juce::Colour& acc)
+void detectScheme (bool& isDark, juce::Colour& acc, bool quick, const juce::var& desktop)
 {
     acc = juce::Colour (0xff3584e4);
-   #if ! JUCE_LINUX
-    isDark = juce::Desktop::getInstance().isDarkModeActive();   // Windows: the "app mode" setting
-   #else
     isDark = false;
+    juce::String scheme, accent;
+    bool fromDesktop = false;
+   #if JUCE_LINUX
+    juce::ignoreUnused (quick, desktop);
     auto get = [] (const char* key) -> juce::String {
         juce::ChildProcess p;
         if (! p.start (juce::StringArray { "gsettings", "get", "org.gnome.desktop.interface", key }))
@@ -94,11 +96,32 @@ void detectScheme (bool& isDark, juce::Colour& acc)
         p.waitForProcessToFinish (2000);
         return out;
     };
-    if (const auto scheme = get ("color-scheme"); scheme.isNotEmpty())
-        isDark = scheme == "prefer-dark";
-    if (const auto a = get ("accent-color"); a.isNotEmpty())
-        acc = gnomeAccent (a);
+    scheme = get ("color-scheme");
+    accent = get ("accent-color");
+    fromDesktop = true;
+   #else
+    juce::ignoreUnused (quick);
+    // under Wine: GNOME's setting as the Linux search service reads it (FetchClient::desktopScheme)
+    if (desktop.isObject() && desktop["scheme"].toString().isNotEmpty())
+    {
+        scheme = desktop["scheme"].toString();
+        accent = desktop["accent"].toString();
+        fromDesktop = true;
+    }
    #endif
+    if (scheme.isNotEmpty())
+        isDark = scheme == "prefer-dark";
+    if (accent.isNotEmpty())
+        acc = gnomeAccent (accent);
+   #if ! JUCE_LINUX
+    if (! fromDesktop)
+        isDark = juce::Desktop::getInstance().isDarkModeActive();   // Windows: the "app mode" setting
+   #else
+    juce::ignoreUnused (fromDesktop);
+   #endif
+    // Settings > Style: Light / Dark instead of the system's choice
+    if (const auto t = prefs::loadTheme(); t != "system")
+        isDark = t == "dark";
     // FETCH_THEME=light|dark overrides the system (tests, screenshots)
     if (const auto force = juce::SystemStats::getEnvironmentVariable ("FETCH_THEME", {}); force.isNotEmpty())
         isDark = force == "dark";
@@ -307,6 +330,13 @@ void FetchLookAndFeel::refresh()
     setColour (juce::TextButton::textColourOnId, fg);
     setColour (juce::ScrollBar::thumbColourId, dim);
     setColour (juce::TooltipWindow::textColourId, tooltipFg);
+    // the sliders' "100 %" boxes (Settings): JUCE's default text is white, invisible in the light scheme
+    setColour (juce::Slider::textBoxTextColourId, fg);
+    setColour (juce::Slider::textBoxBackgroundColourId, entryBg);
+    setColour (juce::Slider::textBoxOutlineColourId, border);
+    setColour (juce::Slider::textBoxHighlightColourId, accentBg.withAlpha (0.35f));
+    setColour (juce::Label::textWhenEditingColourId, fg);
+    setColour (juce::Label::backgroundWhenEditingColourId, entryBg);
 }
 
 void FetchLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
@@ -387,6 +417,16 @@ void FetchLookAndFeel::drawPopupMenuBackground (juce::Graphics& g, int w, int h)
     g.fillAll (theme::popup);
     g.setColour (theme::border);
     g.drawRect (0, 0, w, h);
+}
+
+void FetchLookAndFeel::drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics& g, const juce::Path& path, juce::Image&)
+{
+    // opaque, like a libadwaita popover (JUCE's default is 90 % black: the list showed through)
+    juce::DropShadow (juce::Colours::black.withAlpha (theme::dark ? 0.5f : 0.18f), 10, {}).drawForPath (g, path);
+    g.setColour (theme::popup);
+    g.fillPath (path);
+    g.setColour (theme::border);
+    g.strokePath (path, juce::PathStrokeType (1.0f));
 }
 
 void FetchLookAndFeel::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& area, bool isSeparator, bool isActive,

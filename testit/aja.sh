@@ -12,9 +12,9 @@ R="$(dirname "$D")"
 CFG="$HOME/.config/samplehaku"
 BAK="$(mktemp -d)"
 # korjausloki.jsonl (correction log): tests write to it through the real service -> restored, or removed if it was not there
-for f in korjaukset.json genret.json ikkuna.json korjausloki.jsonl; do [ -f "$CFG/$f" ] && cp "$CFG/$f" "$BAK/"; done
+for f in korjaukset.json genret.json ikkuna.json hidden.json korjausloki.jsonl; do [ -f "$CFG/$f" ] && cp "$CFG/$f" "$BAK/"; done
 restore() {
-  for f in korjaukset.json genret.json ikkuna.json; do
+  for f in korjaukset.json genret.json ikkuna.json hidden.json; do
     if [ -f "$BAK/$f" ]; then cp "$BAK/$f" "$CFG/$f"; fi
   done
   if [ -f "$BAK/korjausloki.jsonl" ]; then cp "$BAK/korjausloki.jsonl" "$CFG/"; else rm -f "$CFG/korjausloki.jsonl"; fi

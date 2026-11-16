@@ -74,6 +74,9 @@ private:
     juce::Rectangle<int> virtualBounds() const;
     void checkAppearance();
     void openSettings (juce::Component& anchor);
+    // A call-out (Settings, Player) inside the editor: it gets Fetch's LookAndFeel and the UI scale.
+    // On the desktop it was its own window with JUCE's default look (dark, see-through, unreadable).
+    void launchCallOut (std::unique_ptr<juce::Component> content, juce::Component& anchor);
     // Player options (the old Play on select button): Play on select, Loop preview, loop length /2, x2, Auto
     void openPlayerMenu();
     const SampleInfo* lengthTarget() const;   // the sample the loop length applies to (playing, else selected)

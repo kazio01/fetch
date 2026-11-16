@@ -103,7 +103,7 @@ FetchEditor::FetchEditor (FetchProcessor& p)
     {
         bool dark = false;
         juce::Colour accent;
-        theme::detectScheme (dark, accent);   // ~10 ms: avoids a flash of the wrong scheme
+        theme::detectScheme (dark, accent, true);   // ~10 ms: avoids a flash of the wrong scheme
         prefs::loadAppearance (theme::uiScale, theme::fontScale);
         theme::setScheme (dark, accent);
         lnf.refresh();
@@ -323,7 +323,21 @@ struct SettingsPanel : juce::Component, private juce::Timer
         add.setButtonText (juce::String::fromUTF8 ("Add folder\xe2\x80\xa6"));
         add.onClick = [this] { pickFolder(); };
         addAndMakeVisible (add);
-        setSize (460, 330);
+        // Style: System follows the desktop (GNOME, also under Wine), Light / Dark always
+        const juce::StringArray names { "System", "Light", "Dark" }, keys { "system", "light", "dark" };
+        for (int i = 0; i < 3; ++i)
+        {
+            auto* b = styleButtons.add (new juce::TextButton (names[i]));
+            b->onClick = [this, k = keys[i]] {
+                prefs::saveTheme (k);
+                showStyle (k);
+                if (onChanged)
+                    onChanged();
+            };
+            addAndMakeVisible (b);
+        }
+        showStyle (prefs::loadTheme());
+        setSize (520, 380);
         loadRoots();
         poll();
         startTimer (2000);
@@ -347,18 +361,36 @@ struct SettingsPanel : juce::Component, private juce::Timer
         async ([this] (juce::String& e) { return client.folders ({}, e); }, [this] (const juce::var& r) {
             roots.clear();
             removeButtons.clear();
-            if (auto* a = r["folders"].getArray())
-                for (auto& f : *a)
-                {
-                    roots.add (f["name"].toString() + juce::String::fromUTF8 (" \xc2\xb7 ") + juce::String ((int) f["count"])
-                               + " samples\n" + f["path"].toString());
-                    auto* b = removeButtons.add (new IconButton (theme::trash(), "Remove from the library", true));
-                    b->onClick = [this, name = f["name"].toString(), path = f["path"].toString(), n = (int) f["count"]] {
-                        confirmRemove (name, path, n);
-                    };
-                    addAndMakeVisible (b);
-                }
-            setSize (getWidth(), 250 + 40 * roots.size());   // the call-out box follows (childBoundsChanged)
+            showSwitches.clear();
+            rootHidden.clear();
+            juce::Array<std::pair<juce::var, bool>> all;   // (folder, hidden): "hidden" = hidden from search (older services: none)
+            for (auto key : { "folders", "hidden" })
+                if (auto* a = r[key].getArray())
+                    for (auto& f : *a)
+                        all.add ({ f, juce::String (key) == "hidden" });
+            std::sort (all.begin(), all.end(), [] (auto& a, auto& b) {
+                return a.first["name"].toString().compareIgnoreCase (b.first["name"].toString()) < 0;
+            });
+            for (auto& [f, hidden] : all)
+            {
+                roots.add (f["name"].toString() + juce::String::fromUTF8 (" \xc2\xb7 ") + juce::String ((int) f["count"])
+                           + " samples" + (hidden ? juce::String::fromUTF8 (" \xc2\xb7 hidden from search") : juce::String())
+                           + "\n" + f["path"].toString());
+                rootHidden.add (hidden);
+                // Show in search: off = the folder stays in the index but no search shows it
+                // (e.g. a network share that can't be reached right now)
+                auto* s = showSwitches.add (new juce::ToggleButton());
+                s->setToggleState (! hidden, juce::dontSendNotification);
+                s->setTooltip ("Show in search (off: hidden, the analysis is kept)");
+                s->onClick = [this, s, path = f["path"].toString()] { setHidden (path, ! s->getToggleState()); };
+                addAndMakeVisible (s);
+                auto* b = removeButtons.add (new IconButton (theme::trash(), "Remove from the library", true));
+                b->onClick = [this, name = f["name"].toString(), path = f["path"].toString(), n = (int) f["count"]] {
+                    confirmRemove (name, path, n);
+                };
+                addAndMakeVisible (b);
+            }
+            setSize (getWidth(), libTop + 94 + 40 * roots.size());   // the call-out box follows (childBoundsChanged)
             resized();
             repaint();
         });
@@ -380,6 +412,14 @@ struct SettingsPanel : juce::Component, private juce::Timer
                                   async ([this, path] (juce::String& e) { return client.addFolder (path, e); },
                                          [this] (const juce::var& st) { showStatus (st); });
                               });
+    }
+    void setHidden (const juce::String& path, bool hide)
+    {
+        async ([this, path, hide] (juce::String& e) { return client.setHidden (path, hide, e); }, [this] (const juce::var&) {
+            loadRoots();
+            if (onLibraryChanged)
+                onLibraryChanged();
+        });
     }
     // Remove folder: only out of Fetch's library (the service's removefolder); the files on disk stay
     void confirmRemove (const juce::String& name, const juce::String& path, int count)
@@ -452,6 +492,15 @@ struct SettingsPanel : juce::Component, private juce::Timer
         }
         repaint();
     }
+    void showStyle (const juce::String& k)
+    {
+        const juce::StringArray keys { "system", "light", "dark" };
+        for (int i = 0; i < styleButtons.size(); ++i)
+        {
+            styleButtons[i]->getProperties().set ("suggested", keys[i] == k);
+            styleButtons[i]->repaint();
+        }
+    }
     void save()
     {
         prefs::saveAppearance ((float) ui.getValue() / 100.0f, (float) font.getValue() / 100.0f);
@@ -465,22 +514,26 @@ struct SettingsPanel : juce::Component, private juce::Timer
             g.setFont (theme::font (theme::body, true));
             g.drawText (t, 16, y, 240, 24, juce::Justification::centredLeft);
         };
-        auto text = [&] (const juce::String& t, int y, bool dim, float size = theme::body) {
+        auto text = [&] (const juce::String& t, int y, bool dim, float size = theme::body, int right = 64) {
             g.setColour (dim ? theme::dim : theme::fg);
             g.setFont (theme::font (size));
-            g.drawText (t, 16, y, getWidth() - 64, 18, juce::Justification::centredLeft, true);
+            g.drawText (t, 16, y, getWidth() - right, 18, juce::Justification::centredLeft, true);
         };
         head ("Appearance", 12);
         text ("UI scaling", 50, false);
         text ("Text, icons and spacing", 68, true, 12.0f);
         text ("Font size", 100, false);
         text ("Text only", 118, true, 12.0f);
-        head ("Library folders", 156);
-        int y = 190;
-        for (auto& r : roots)
+        text ("Style", 150, false);
+        text ("Light or dark", 168, true, 12.0f);
+        head ("Library folders", libTop);
+        int y = libTop + 34;
+        for (int i = 0; i < roots.size(); ++i)
         {
-            text (r.upToFirstOccurrenceOf ("\n", false, false), y, false);
-            text (r.fromFirstOccurrenceOf ("\n", false, false), y + 17, true, 12.0f);
+            const auto& r = roots[i];
+            const bool hid = rootHidden[i];
+            text (r.upToFirstOccurrenceOf ("\n", false, false), y, hid, theme::body, 116);
+            text (r.fromFirstOccurrenceOf ("\n", false, false), y + 17, true, 12.0f, 116);
             y += 40;
         }
         if (statusTitle.isNotEmpty())
@@ -494,9 +547,14 @@ struct SettingsPanel : juce::Component, private juce::Timer
         reset.setBounds (getWidth() - 86, 12, 70, 26);
         ui.setBounds (170, 52, getWidth() - 186, 28);
         font.setBounds (170, 102, getWidth() - 186, 28);
-        add.setBounds (getWidth() - 126, 154, 110, 28);
+        for (int i = 0; i < styleButtons.size(); ++i)
+            styleButtons[i]->setBounds (getWidth() - 16 - (3 - i) * 84, 152, 80, 28);
+        add.setBounds (getWidth() - 126, libTop - 2, 110, 28);
         for (int i = 0; i < removeButtons.size(); ++i)
-            removeButtons[i]->setBounds (getWidth() - 46, 190 + 40 * i + 4, 30, 30);
+        {
+            removeButtons[i]->setBounds (getWidth() - 46, libTop + 34 + 40 * i + 4, 30, 30);
+            showSwitches[i]->setBounds (getWidth() - 100, libTop + 34 + 40 * i + 4, 50, 30);
+        }
     }
     FetchClient& client;
     juce::Slider ui, font;
@@ -504,9 +562,13 @@ struct SettingsPanel : juce::Component, private juce::Timer
     std::unique_ptr<juce::FileChooser> chooser;
     juce::StringArray roots;
     juce::OwnedArray<IconButton> removeButtons;
+    juce::OwnedArray<juce::ToggleButton> showSwitches;
+    juce::OwnedArray<juce::TextButton> styleButtons;
+    static constexpr int libTop = 206;           // the Library folders heading
+    juce::Array<bool> rootHidden;
     juce::uint32 holdUntil = 0;
     juce::String statusTitle, statusLine;
-    std::function<void()> onLibraryChanged;    // a folder was removed: the sidebar's Folders tree reloads
+    std::function<void()> onLibraryChanged;    // a folder was removed or hidden: the sidebar's Folders tree reloads
     bool wasRunning = false;
     std::shared_ptr<bool> alive = std::make_shared<bool> (true);
     std::function<void()> onChanged;
@@ -517,13 +579,26 @@ void FetchEditor::openSettings (juce::Component& anchor)
 {
     auto panel = std::make_unique<SettingsPanel> (proc.client, [sp = juce::Component::SafePointer<FetchEditor> (this)] {
         if (sp != nullptr)
+        {
             sp->checkAppearance();
+            sp->checkTheme();        // Style: System / Light / Dark
+        }
     });
     panel->onLibraryChanged = [sp = juce::Component::SafePointer<FetchEditor> (this)] {
         if (sp != nullptr)
             sp->sidebar.foldersChanged();
     };
-    juce::CallOutBox::launchAsynchronously (std::move (panel), anchor.getScreenBounds(), nullptr);
+    launchCallOut (std::move (panel), anchor);
+}
+
+void FetchEditor::launchCallOut (std::unique_ptr<juce::Component> content, juce::Component& anchor)
+{
+    // children of the editor are drawn scaled by uiScale (resized): the box works in the unscaled coordinates
+    const auto toVirtual = juce::AffineTransform::scale (1.0f / theme::uiScale);
+    const auto area = getLocalArea (&anchor, anchor.getLocalBounds()).toFloat().transformedBy (toVirtual).toNearestInt();
+    auto& box = juce::CallOutBox::launchAsynchronously (std::move (content), area, this);
+    box.setTransform (juce::AffineTransform::scale (theme::uiScale));
+    box.updatePosition (area, virtualBounds());
 }
 
 // Player options (was the Play on select toggle), as in the Fetch window's pop-over.
@@ -692,7 +767,7 @@ void FetchEditor::openPlayerMenu()
             sp->changeLength (f);
     };
     auto panel = std::make_unique<PlayerPanel> (std::move (h));
-    juce::CallOutBox::launchAsynchronously (std::move (panel), autoplayButton.getScreenBounds(), nullptr);
+    launchCallOut (std::move (panel), autoplayButton);
 }
 
 juce::Rectangle<int> FetchEditor::virtualBounds() const
@@ -1420,7 +1495,8 @@ void FetchEditor::checkTheme()
     pool->addJob ([this, flag = alive] {
         bool dark = false;
         juce::Colour accent;
-        theme::detectScheme (dark, accent);
+        const auto desk = FetchClient::underWine() ? proc.client.desktopScheme() : juce::var();
+        theme::detectScheme (dark, accent, false, desk);
         juce::MessageManager::callAsync ([this, dark, accent, flag] {
             if (! *flag)
                 return;

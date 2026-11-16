@@ -1,5 +1,5 @@
 ; Fetch installer for Windows (Inno Setup 6). Built in CI from the portable package folder:
-;   iscc /DAppVersion=0.5.0 /DSrc="<...>\Fetch-portable-0.5.0-windows-x64" /DOut="<out dir>" windows\fetch.iss
+;   iscc /DAppVersion=0.6.0 /DSrc="<...>\Fetch-portable-0.6.0-windows-x64" /DOut="<out dir>" windows\fetch.iss
 ;
 ; Installs for the current user (no administrator rights for the app itself) into
 ; %LOCALAPPDATA%\Programs\Fetch, the same layout as the portable package: app\, tools\, VST3\ and,

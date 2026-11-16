@@ -59,6 +59,24 @@ inline void saveAppearance (float ui, float font)
     f.replaceWithText (juce::JSON::toString (v));
 }
 
+// Style: "system" (follow the desktop), "light" or "dark". In appearance.json, shared with the Fetch window
+// on Linux. Read from any thread (no cache).
+inline juce::String loadTheme()
+{
+    const auto t = juce::JSON::parse (file().getSiblingFile ("appearance.json"))["theme"].toString();
+    return t == "light" || t == "dark" ? t : juce::String ("system");
+}
+inline void saveTheme (const juce::String& t)
+{
+    const auto f = file().getSiblingFile ("appearance.json");
+    auto v = juce::JSON::parse (f);
+    if (! v.isObject())
+        v = juce::var (new juce::DynamicObject());
+    v.getDynamicObject()->setProperty ("theme", t);
+    f.getParentDirectory().createDirectory();
+    f.replaceWithText (juce::JSON::toString (v));
+}
+
 // Appearance (UI scale, text size): written by the Fetch window's Settings, next to plugin.json.
 // Returns true when the values changed since the last call.
 inline bool loadAppearance (float& ui, float& font)

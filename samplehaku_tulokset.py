@@ -173,9 +173,10 @@ DEFAULT_COLLAPSED = ["Genre", "Sound", "Tempo"]   # default layout: Type and Ins
 UI_CFG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "samplehaku/ikkuna.json"
 
 
-# Appearance (Settings): UI scale and text size, shared with the plugin (Prefs.h reads the same file).
+# Appearance (Settings): UI scale, text size and style, shared with the plugin (Prefs.h reads the same file).
 APPEARANCE = UI_CFG.parent / "appearance.json"
 SCALE_MIN, SCALE_MAX = 0.75, 1.5
+THEMES = ("system", "light", "dark")         # style: follow the desktop, or always light / dark
 
 
 def load_appearance() -> dict:
@@ -184,10 +185,12 @@ def load_appearance() -> dict:
     except (OSError, ValueError):
         d = {}
     clamp = lambda v: min(SCALE_MAX, max(SCALE_MIN, float(v)))  # noqa: E731
+    theme = d.get("theme") if isinstance(d, dict) and d.get("theme") in THEMES else "system"
     try:
-        return {"ui_scale": clamp(d.get("ui_scale", 1.0)), "font_scale": clamp(d.get("font_scale", 1.0))}
+        return {"ui_scale": clamp(d.get("ui_scale", 1.0)), "font_scale": clamp(d.get("font_scale", 1.0)),
+                "theme": theme}
     except (TypeError, ValueError):
-        return {"ui_scale": 1.0, "font_scale": 1.0}
+        return {"ui_scale": 1.0, "font_scale": 1.0, "theme": theme}
 
 
 def save_appearance(a: dict) -> None:
@@ -844,10 +847,14 @@ class ResultsWindow(Adw.ApplicationWindow):
                 out += self._tree_items(d["path"], depth + 1)
         return out
 
-    def after_library_change(self) -> None:
-        """A library folder was removed (Settings): the Folders tree is read again from the service."""
+    def after_library_change(self, reload: bool = False) -> None:
+        """A library folder was removed or hidden (Settings): the Folders tree is read again from the service.
+        reload: the list on screen (All samples, a search, a library folder) is loaded again too."""
         self.tree_cache = {}
-        self.refresh_sidebar()
+        if reload and self._paged():
+            self.load_all((self.browse or {}).get("text", "") if self.folder == SEARCH else "", under=self._under())
+        else:
+            self.refresh_sidebar()
 
     def _load_tree(self, parent: str) -> None:
         if parent in self.tree_pending:
@@ -1440,7 +1447,7 @@ class ResultsWindow(Adw.ApplicationWindow):
         files = []
         try:
             for p in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
-                if p.suffix.lower() in AUDIO_EXT and (p.is_file() or p.is_symlink()):
+                if p.suffix.lower() in AUDIO_EXT and (p.is_symlink() or p.is_file()):
                     files.append(p)
         except OSError as e:
             self.show_toast(f"Cannot open folder: {e}")
@@ -2218,6 +2225,13 @@ class SettingsDialog(Adw.PreferencesDialog):
             row.add_suffix(sc)
             look.add(row)
             self.scales[key] = sc
+        # Style: System follows GNOME's light/dark setting; Light/Dark always (also the plugin, e.g. under Wine,
+        # where the desktop's setting can't be seen)
+        self.style_row = Adw.ComboRow(title="Style", subtitle="Light or dark",
+                                      model=Gtk.StringList.new(["System", "Light", "Dark"]))
+        self.style_row.set_selected(THEMES.index(self.a.get("theme", "system")))
+        self.style_row.connect("notify::selected", self._style_changed)
+        look.add(self.style_row)
         reset = Gtk.Button(label="Reset", valign=Gtk.Align.CENTER, tooltip_text="Back to 100 %")
         reset.add_css_class("flat")
         reset.connect("clicked", lambda *_: [sc.set_value(100) for sc in self.scales.values()])
@@ -2246,16 +2260,27 @@ class SettingsDialog(Adw.PreferencesDialog):
     def _load_roots(self) -> None:
         def done(out: str) -> None:
             try:
-                roots = json.loads(out).get("folders", [])
+                res = json.loads(out)
             except ValueError:
                 return
+            roots = [(r, False) for r in res.get("folders", [])] + [(r, True) for r in res.get("hidden", [])]
+            roots.sort(key=lambda x: x[0]["name"].lower())
             for r in self.root_rows:
                 self.lib.remove(r)
             self.root_rows = []
-            for r in roots:
+            for r, hidden in roots:
                 n = f"{r['count']:,}".replace(",", " ")
-                row = Adw.ActionRow(title=r["name"], subtitle=f"{r['path']} · {n} samples")
+                row = Adw.ActionRow(title=r["name"], subtitle=f"{r['path']} · {n} samples"
+                                    + (" · hidden from search" if hidden else ""))
                 row.add_prefix(Gtk.Image(icon_name="folder-symbolic"))
+                # Show in search: off = the folder stays in the index but no search, Similar or
+                # Folders view shows it (e.g. a network share that can't be reached right now)
+                sw = Gtk.Switch(active=not hidden, valign=Gtk.Align.CENTER,
+                                tooltip_text="Show in search (off: hidden, the analysis is kept)")
+                sw.connect("notify::active", lambda w, _p, r=r: self._set_hidden(r, not w.get_active()))
+                row.add_suffix(sw)
+                if hidden:
+                    row.add_css_class("dim-label")
                 rm = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER,
                                 tooltip_text="Remove from the library")
                 rm.add_css_class("flat")
@@ -2264,6 +2289,21 @@ class SettingsDialog(Adw.PreferencesDialog):
                 self.lib.add(row)
                 self.root_rows.append(row)
         self.win.call("Folders", GLib.Variant("(s)", ("",)), done, 60_000)
+
+    def _set_hidden(self, r: dict, hide: bool) -> None:
+        def done(out: str) -> None:
+            try:
+                res = json.loads(out)
+            except ValueError:
+                return
+            if res.get("error"):
+                self.status_row.set_title("Could not change the folder")
+                self.status_row.set_subtitle(res["error"][:300])
+                self.status_row.set_visible(True)
+                self._hold_status = time.time() + 30
+            self._load_roots()
+            self.win.after_library_change(reload=True)
+        self.win.call("SetFolderHidden", GLib.Variant("(sb)", (r["path"], hide)), done, 30_000)
 
     def _confirm_remove(self, r: dict) -> None:
         """Remove folder: only out of Fetch's library (RemoveFolder); the files on disk stay."""
@@ -2359,6 +2399,12 @@ class SettingsDialog(Adw.PreferencesDialog):
             GLib.source_remove(self._timer)
         self._timer = GLib.timeout_add(250, self._apply)   # after the slider settles
 
+    def _style_changed(self, row, _p) -> None:
+        theme = THEMES[min(row.get_selected(), len(THEMES) - 1)]
+        if theme != self.a.get("theme"):
+            self.a["theme"] = theme
+            self._apply()
+
     def _apply(self) -> bool:
         self._timer = 0
         save_appearance(self.a)
@@ -2386,6 +2432,9 @@ class App(Adw.Application):
         """UI scale: text, our paddings and icons and the logo; text size: text only (on top of the
         UI scale). Text goes through Gtk.Settings' DPI, which the rest of GTK's sizes follow."""
         ui, font = a["ui_scale"], a["font_scale"]
+        Adw.StyleManager.get_default().set_color_scheme(
+            {"light": Adw.ColorScheme.FORCE_LIGHT, "dark": Adw.ColorScheme.FORCE_DARK}.get(
+                a.get("theme"), Adw.ColorScheme.DEFAULT))
         Gtk.Settings.get_default().props.gtk_xft_dpi = round(self.base_dpi * ui * font)
         self.css.load_from_string(scaled_css(CSS, ui))
         if self.win is not None:

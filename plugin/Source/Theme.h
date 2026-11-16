@@ -17,7 +17,10 @@ namespace theme
     void setScheme (bool isDark, juce::Colour accentColour);
     // The system's choice: GNOME (gsettings color-scheme + accent-color) on Linux, the OS setting elsewhere.
     // Blocking (runs a process on Linux): call it off the message thread.
-    void detectScheme (bool& isDark, juce::Colour& accentColour);
+    // quick: on the message thread (the editor's constructor). desktop: {scheme, accent} from the search
+    // service, used by the Windows plugin under Wine (it must not start programs there: a Linux program
+    // started from Wine never reports that it finished, and starting one caused audio dropouts).
+    void detectScheme (bool& isDark, juce::Colour& accentColour, bool quick = false, const juce::var& desktop = {});
 
     // Adwaita Sans 11 pt = 14.67 px, as in GNOME
     constexpr float body = 14.67f;
@@ -60,6 +63,7 @@ public:
     juce::Font getComboBoxFont (juce::ComboBox&) override { return theme::font (theme::small); }
     void positionComboBoxText (juce::ComboBox&, juce::Label&) override;
     void drawPopupMenuBackground (juce::Graphics&, int w, int h) override;
+    void drawCallOutBoxBackground (juce::CallOutBox&, juce::Graphics&, const juce::Path&, juce::Image&) override;
     void drawPopupMenuItem (juce::Graphics&, const juce::Rectangle<int>&, bool isSeparator, bool isActive,
                             bool isHighlighted, bool isTicked, bool hasSubMenu, const juce::String& text,
                             const juce::String& shortcutKeyText, const juce::Drawable* icon,

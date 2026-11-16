@@ -30,7 +30,7 @@ try:
     check("adding makes a hard link", lk.exists() and lk.stat().st_ino == src.stat().st_ino)
     check("recognised by inode", col.has(str(src)))
     col.add(str(src))
-    check("adding twice makes no copy", len(list((base / "Liked").iterdir())) == 1)
+    check("adding twice makes no copy", len([p for p in (base / "Liked").iterdir() if not p.name.startswith(".")]) == 1)
     col.add(str(other))
     check("same name, different file -> '(2)'", (base / "Liked" / "Kick 01 (2).wav").exists())
     (base / "Liked" / "Kick 01.wav.asd").write_text("ableton")
@@ -60,6 +60,20 @@ try:
         c2 = kk.Collection(base / "Liked2")
         c2.add(str(far))
         check("different disk -> symlink", (base / "Liked2" / "Far.wav").is_symlink())
+        check("symlinked like: liked", c2.has(str(far)) and c2.has(str(base / "Liked2" / "Far.wav")))
+        c2.remove(str(far))
+        check("symlinked like: unlike by the original removes the link", not os.path.lexists(base / "Liked2" / "Far.wav"))
+        c2.add(str(far))
+        c2.remove(str(base / "Liked2" / "Far.wav"))
+        check("symlinked like: unlike from the Liked view removes it", not os.path.lexists(base / "Liked2" / "Far.wav"))
+    # a link into an unreachable share: a file in the collection is liked without following it
+    (base / "Liked" / "Gone.wav").symlink_to("/nonexistent-share/Gone.wav")
+    col.mtime = None
+    check("a link to an offline share counts as liked", col.has(str(base / "Liked" / "Gone.wav")))
+    col.add(str(src))
+    import json as _json
+    man = _json.loads((base / "Liked" / kk.MANIFEST).read_text())
+    check("a hard-link like remembers its original by name", man.get("Kick 01.wav") == str(src))
     shutil.rmtree(tmp, ignore_errors=True)
 finally:
     shutil.rmtree(base, ignore_errors=True)

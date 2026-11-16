@@ -57,6 +57,12 @@ class FetchClient
 public:
     FetchClient();
 
+    // The Windows plugin running under Wine on Linux (e.g. Ableton Live)
+    static bool underWine();
+    // GNOME's light/dark and accent from the running service ({scheme, accent}), void if it doesn't answer.
+    // Never starts the service; short timeout. For the theme under Wine.
+    juce::var desktopScheme();
+
     // Makes sure the service runs: on Linux D-Bus activation starts it, on Windows (or with
     // FETCH_SERVER_CMD set) the configured command. Waits up to timeoutMs. Returns "" or an error.
     // 120 s: a cold start on Windows (Python imports scanned by Defender, a 100k-sample index) measured
@@ -71,6 +77,8 @@ public:
     juce::var addFolder (const juce::String& path, juce::String& error);
     // Remove folder: out of the library and the index only (files on disk stay) -> {removed, folder} or {error}
     juce::var removeFolder (const juce::String& path, juce::String& error);
+    // Show in search off/on: the folder stays in the index, searches leave it out -> {hidden: [...]} or {error}
+    juce::var setHidden (const juce::String& path, bool hidden, juce::String& error);
     juce::var indexStatus (juce::String& error);
     PageResult folder (const juce::String& path, const juce::String& filters, const juce::String& order);
     PageResult similar (const juce::String& path, const juce::StringArray& conds, int n);

@@ -75,6 +75,9 @@ def vapauta_muisti() -> None:
 
 
 RESULTS_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "samplehaku/tulokset"
+# Library folders hidden from every search (Settings > Library folders switch), e.g. a network share that
+# can't be reached right now (VPN, travelling). {"hidden": ["/mnt/share/Samples", ...]}. The index keeps them.
+HIDDEN_PATH = Path(os.environ.get("SAMPLEHAKU_HIDDEN", Path.home() / ".config/samplehaku/hidden.json"))
 
 SIMILAR_MODES = {
     "": ("Similar", None, 0),
@@ -186,6 +189,7 @@ class Engine:
         self._sortkeys, self._ino, self._word_cache = {}, {}, {}
         self._docs = self._vocab = self._path_rank = self._ps = None     # (each guarded by its _for)
         self._rank_cache, self._tree_cache = {}, {}
+        self._vis_key = None
         self.path_pos = {p: i for i, p in enumerate(idx.paths)}
         vapauta_muisti()
 
@@ -214,6 +218,56 @@ class Engine:
         finally:
             self._rebuilding = False
 
+    def hidden(self) -> list[str]:
+        """Hidden library folders (HIDDEN_PATH), re-read when the file changes (also when another process,
+        e.g. the window, edits it)."""
+        try:
+            m = HIDDEN_PATH.stat().st_mtime_ns
+        except OSError:
+            m = None
+        if not hasattr(self, "_hidden") or m != self._hidden_mtime:
+            h = []
+            if m is not None:
+                try:
+                    h = json.loads(HIDDEN_PATH.read_text(encoding="utf-8")).get("hidden", [])
+                except (OSError, ValueError, AttributeError):
+                    h = []
+            self._hidden = sorted({polut.norm(str(x)).rstrip("/") for x in h if isinstance(x, str) and x.strip()})
+            self._hidden_mtime = m
+        return self._hidden
+
+    def visible(self) -> np.ndarray | None:
+        """Mask of the samples outside hidden folders; None = nothing hidden (no work, no copies)."""
+        hid = self.hidden()
+        if not hid:
+            return None
+        idx = self.index()
+        key = (id(idx), tuple(hid))
+        if getattr(self, "_vis_key", None) != key:
+            m = np.ones(len(idx.paths), dtype=bool)
+            for h in hid:
+                m[self.under(h)] = False
+            self._vis, self._vis_key = m, key
+        return self._vis
+
+    def set_hidden(self, path: str, hide: bool) -> dict:
+        """Settings switch: hide a library folder from searches, or show it again. -> {hidden: [...]}."""
+        root = polut.norm(path).rstrip("/")
+        if not root:
+            return {"error": "No folder given."}
+        hid = set(self.hidden())
+        if hide:
+            hid.add(root)
+        else:
+            hid.discard(root)
+        HIDDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = HIDDEN_PATH.with_name(HIDDEN_PATH.name + ".tmp")
+        tmp.write_text(json.dumps({"hidden": sorted(hid)}, indent=1, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, HIDDEN_PATH)
+        self._hidden_mtime = "changed"                  # re-read on the next call
+        log(f"{'hid' if hide else 'showed'} library folder {root}")
+        return {"hidden": self.hidden()}
+
     def rel(self, tag: str) -> np.ndarray:
         if tag not in self.rel_cache:
             if len(self.rel_cache) >= 64:                # 1.7 MB each for 200k samples
@@ -228,6 +282,9 @@ class Engine:
         idx = self.index()
         if not text.strip():
             scores = sh.text_scores(self.clap, idx, text, tags)
+            vis = self.visible()
+            if vis is not None:
+                scores = np.where(vis, scores, -np.inf)
             return [idx.paths[i] for i, _ in idx.rank(scores, n, tags=tags)]
         sel, _ = self.ranked(text, tags)
         return [idx.paths[i] for i in sel[:n]]
@@ -263,6 +320,9 @@ class Engine:
             score += bonus * idx.tag_scores([t])                        # closest tempo first
         # timbre decides the order if selected; otherwise it only breaks ties
         score += timbre if "timbre" in use else 0.01 * timbre
+        vis = self.visible()
+        if vis is not None:
+            mask &= vis
         score = np.where(mask, score, -np.inf)
         return [idx.paths[j] for j, _ in idx.rank(score, n, exclude=i)], skipped
 
@@ -288,6 +348,9 @@ class Engine:
                 raise LookupError("Sound features have not been computed for this file (samplehaku-piirteet).")
             ok = np.isfinite(v) & ((v - v[i]) * sign > 0)
             scores = np.where(ok, scores, -np.inf)
+        vis = self.visible()
+        if vis is not None:
+            scores = np.where(vis, scores, -np.inf)
         return [idx.paths[j] for j, _ in idx.rank(scores, n, exclude=i)]
 
     def docs(self) -> list[str]:
@@ -363,6 +426,9 @@ class Engine:
         scores = (sh.text_scores(self.clap, idx, sh.translate(text), tags) if text.strip() or tags
                   else np.zeros(len(idx.paths), dtype=np.float32))     # just "-kick": library order
         base = idx.tag_mask(tags) if tags else np.ones(len(idx.paths), dtype=bool)
+        vis = self.visible()
+        if vis is not None:
+            base &= vis
         for w in negs:                                  # -kick: remove everything whose search text contains the word
             base &= ~self.word_match(w)
         order = lambda sel: sel[np.argsort(-scores[sel], kind="stable")]   # noqa: E731
@@ -471,7 +537,7 @@ class Engine:
             return self._browse_folder(folder, filters, offset, limit, order, seed)
         words, tags = sh.parse_tags(" ".join(x for x in (text, filters) if x))
         if words:
-            key = (words, tuple(tags), id(idx))
+            key = (words, tuple(tags), id(idx), tuple(self.hidden()))
             cache = getattr(self, "_rank_cache", {})
             if key not in cache:
                 cache = dict(list(cache.items())[-7:])     # keep the last few searches in memory
@@ -483,6 +549,9 @@ class Engine:
             return {"total": int(len(sel)), "mode": mode, "paths": [idx.paths[i] for i in page],
                     "details": {idx.paths[i]: self.detail(int(i)) for i in page}}
         sel = np.nonzero(idx.tag_mask(tags))[0] if tags else np.arange(len(idx.paths))
+        vis = self.visible()
+        if vis is not None:
+            sel = sel[vis[sel]]
         if order.startswith("sort:"):
             sel = self._sorted(sel, order)
         elif order == "shuffle":
@@ -508,6 +577,9 @@ class Engine:
         sel = self._path_sorted()[1][lo:hi]              # already in path order
         if tags:
             sel = sel[idx.tag_mask(tags)[sel]]
+        vis = self.visible()
+        if vis is not None:
+            sel = sel[vis[sel]]
         if order.startswith("sort:"):
             sel = self._sorted(sel, order)
         elif order == "shuffle":
@@ -567,7 +639,11 @@ class Engine:
                         except OSError:
                             pass
             self._ino[st.st_dev] = ino
-        return self._ino[st.st_dev].get((st.st_dev, st.st_ino))
+        j = self._ino[st.st_dev].get((st.st_dev, st.st_ino))
+        if j is not None:
+            import samplehaku_kokoelmat as kok
+            kok.remember_original(path, idx.paths[j])   # next time by name (Liked view: no inode table)
+        return j
 
     def _path_sorted(self):
         """(paths sorted as strings, their index positions) for prefix ranges: the folder tree and
@@ -604,16 +680,21 @@ class Engine:
         directly in parent). Skips over a whole subfolder with one bisect, so a level costs
         about (subfolders × log n), not the number of samples under it."""
         sp, _ = self._path_sorted()
+        hid = set(self.hidden())
+        if getattr(self, "_tree_hidden", None) != hid:     # a folder was hidden or shown: counts and roots change
+            self._tree_cache, self._tree_hidden = {}, hid
         cache = self._tree_cache
         if parent in cache:
             return cache[parent]
         if not parent:
-            out = {"folders": [], "files": 0}
+            # "hidden": hidden library folders, only for Settings (the tree and older clients ignore the key)
+            out = {"folders": [], "files": 0, "hidden": []}
             for r in self.tree_roots():
                 lo, hi = self._range(r)
                 if hi > lo:
-                    out["folders"].append({"name": r.rsplit("/", 1)[-1] or r, "path": r, "count": hi - lo,
-                                           "subs": any("/" in sp[k][len(r) + 1:] for k in range(lo, hi))})
+                    e = {"name": r.rsplit("/", 1)[-1] or r, "path": r, "count": hi - lo,
+                         "subs": any("/" in sp[k][len(r) + 1:] for k in range(lo, hi))}
+                    out["hidden" if self._is_hidden(r, hid) else "folders"].append(e)
             cache[parent] = out
             return out
         lo, hi = self._range(parent)
@@ -632,12 +713,17 @@ class Engine:
             # interleave in name order, so this usually looks at a few paths)
             cut = len(sub) + 1
             nested = any("/" in sp[k][cut:] for k in range(s_lo, s_hi))
-            subs.append({"name": name, "path": sub, "count": s_hi - s_lo, "subs": nested})
+            if not self._is_hidden(sub, hid):
+                subs.append({"name": name, "path": sub, "count": s_hi - s_lo, "subs": nested})
             i = max(s_hi, i + 1)
         subs.sort(key=lambda d: d["name"].lower())
         out = {"folders": subs, "files": files}
         cache[parent] = out
         return out
+
+    @staticmethod
+    def _is_hidden(folder: str, hid: set[str]) -> bool:
+        return any(folder == h or folder.startswith(h + "/") for h in hid)
 
     def folder_label(self, path: str) -> str:
         """'Samples/Pack Vol 5/Instruments' from the library root; otherwise a ~/ path."""
@@ -682,13 +768,25 @@ def original_path(path: str) -> str:
     nothing is looked for."""
     import samplehaku_kokoelmat as kok
     p = Path(path)
-    if not kok._manifest_dir(p.parent):
+
+    def target() -> str:
+        # a symlink (a like on another drive) by its text: resolve() follows it, over the network if the
+        # sample is on a share (a round trip per row of the Liked view)
+        if p.is_symlink():
+            try:
+                t = kok._link_target(p)
+                if os.path.isabs(t):
+                    return t
+            except OSError:
+                pass
         return str(p.resolve())
+    if not kok._manifest_dir(p.parent):
+        return target()
     try:
         m = json.loads((p.parent / MANIFEST).read_text())
-        return m.get(p.name, str(p.resolve()))
+        return m.get(p.name) or target()
     except (OSError, ValueError):
-        return str(p.resolve())
+        return target()
 
 
 def results_folder(title: str, paths: list[str], source: str | None = None) -> str:
@@ -700,7 +798,9 @@ def results_folder(title: str, paths: list[str], source: str | None = None) -> s
     # this very folder, a deleted and re-created folder would show up empty there.
     d.mkdir(parents=True, exist_ok=True)
     for c in d.iterdir():
-        if c.is_dir() and not c.is_symlink():
+        # is_symlink first: is_dir() follows a link, and a link into an unreachable network share
+        # (VPN, share offline) raises ENODEV instead of returning False
+        if not c.is_symlink() and c.is_dir():
             shutil.rmtree(c)
         else:
             c.unlink()
@@ -1174,6 +1274,16 @@ class SampleSearch(ServiceInterface):
         if "removed" in out:
             self.eng.reload_soon(out["folder"])
         return json.dumps(out)
+
+    @method()
+    async def SetFolderHidden(self, path: "s", hidden: "b") -> "s":  # noqa: F821
+        """Settings > Library folders switch: hide a folder from every search (the index keeps it) or show
+        it again. -> JSON {hidden: [...]} or {error}."""
+        self.act.touch()
+        try:
+            return json.dumps(await asyncio.to_thread(self.eng.set_hidden, path, bool(hidden)))
+        except OSError as e:
+            return json.dumps({"error": str(e)})
 
     @method()
     async def IndexStatus(self) -> "s":  # noqa: F821

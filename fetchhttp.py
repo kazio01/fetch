@@ -17,6 +17,7 @@ All requests are POST /v1/<name> with a JSON body; answers are JSON, errors {"er
              at a time; parent "" = the library roots
     addfolder   {path} -> indexstatus: add a library folder, analysed in the background (indeksoija.py)
     removefolder {path} -> {removed, folder}: a library folder leaves the index (files on disk stay)
+    sethidden   {path, hidden} -> {hidden: [...]}: hide a library folder from searches / show it again
     indexstatus {} -> {state, folder, step, steps, title, line, queue, error}
     similar  {path, conds: [timbre, key, bpm], n}        -> {paths, details, skipped}
     details  {paths: [...]}                              -> {path: details}
@@ -26,6 +27,8 @@ All requests are POST /v1/<name> with a JSON body; answers are JSON, errors {"er
     like     {paths, on}       -> {path: liked}: on true/false = like/unlike, missing = toggle
     recent   {add?}            -> {recent: [query, …]} (shared with the Fetch window, ikkuna.json)
     settags  {paths, tags}     -> {path: details}: "Edit tags…" ({type?, inst?, tags?}; null = automatic)
+    desktop  {}                -> {scheme, accent}: GNOME's light/dark and accent colour ("" elsewhere), for
+                                  the Windows plugin under Wine, which can't see the desktop's setting
 
 Every "details" entry also carries "liked" (in Liked Samples).
 
@@ -74,6 +77,29 @@ class Api:
         return {"ok": True, "version": _version(), "ready": self.eng.ready.is_set(),
                 "error": self.eng.error, "torch": getattr(torch, "__version__", "")}
 
+    _desktop = (0.0, {})
+
+    def desktop(self, a: dict) -> dict:
+        """GNOME's color-scheme and accent-color (gsettings), cached for 1 s: the plugin under Wine asks every
+        2 s. Starting a program from inside Wine for this caused audio dropouts in the host."""
+        import shutil
+        import subprocess
+        t, cached = Api._desktop
+        if time.monotonic() - t < 1.0:
+            return cached
+        out = {"scheme": "", "accent": ""}
+        gs = shutil.which("gsettings")
+        if gs:
+            for key, field in (("color-scheme", "scheme"), ("accent-color", "accent")):
+                try:
+                    r = subprocess.run([gs, "get", "org.gnome.desktop.interface", key],
+                                       capture_output=True, text=True, timeout=2)
+                    out[field] = r.stdout.strip().strip("'") if r.returncode == 0 else ""
+                except (OSError, subprocess.SubprocessError):
+                    pass
+        Api._desktop = (time.monotonic(), out)
+        return out
+
     def browse(self, a: dict) -> dict:
         if (a.get("text") or "").strip():
             self.eng.ready.wait(60)      # text search needs CLAP's text model
@@ -96,6 +122,9 @@ class Api:
         if "removed" in out:
             self.eng.reload_soon(out["folder"])
         return out
+
+    def sethidden(self, a: dict) -> dict:
+        return self.eng.set_hidden(str(a.get("path", "")), bool(a.get("hidden", True)))
 
     def indexstatus(self, a: dict) -> dict:
         from hakupalvelu import index_status
@@ -177,7 +206,7 @@ class Api:
         import samplehaku as sh
         folder = Path(str(a["path"]))
         audio = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".opus", ".m4a"}
-        files = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in audio),
+        files = sorted((p for p in folder.iterdir() if (p.is_symlink() or p.is_file()) and p.suffix.lower() in audio),
                        key=lambda p: p.name.lower()) if folder.is_dir() else []
         _, tags = sh.parse_tags(str(a.get("filters", "")))
         idx = self.eng.index()
@@ -281,7 +310,7 @@ def make_handler(api: Api, port: int):
                 self._send(403, {"error": "forbidden"})
                 return
             name = self.path.removeprefix("/v1/")
-            fn = getattr(api, name, None) if name in ("ping", "browse", "similar", "details", "catalog", "folder", "folders", "addfolder", "removefolder", "indexstatus", "like", "recent", "settags") else None
+            fn = getattr(api, name, None) if name in ("ping", "browse", "similar", "details", "catalog", "folder", "folders", "addfolder", "removefolder", "sethidden", "indexstatus", "like", "recent", "settags", "desktop") else None
             if fn is None:
                 self._send(404, {"error": f"unknown request {self.path}"})
                 return

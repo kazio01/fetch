@@ -1,4 +1,31 @@
 #include "FetchClient.h"
+#if JUCE_WINDOWS
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #include <windows.h>
+#endif
+
+bool FetchClient::underWine()
+{
+   #if JUCE_WINDOWS
+    static const bool wine = [] {
+        if (auto* ntdll = GetModuleHandleW (L"ntdll.dll"))
+            return GetProcAddress (ntdll, "wine_get_version") != nullptr;
+        return false;
+    }();
+    return wine;
+   #else
+    return false;
+   #endif
+}
+
+juce::var FetchClient::desktopScheme()
+{
+    juce::String err;
+    auto r = post ("desktop", juce::var (new juce::DynamicObject()), 1500, err);
+    return err.isEmpty() && r.isObject() ? r : juce::var();
+}
 
 SampleInfo SampleInfo::fromJson (const juce::String& path, const juce::var& d)
 {
@@ -167,11 +194,21 @@ juce::String FetchClient::serverCommand() const
         if (f.existsAsFile())
             cmd = f.loadFileAsString().trim();
     }
+    const juce::String activate = " call --session --dest fi.samplehaku.Search --object-path /fi/samplehaku/SearchProvider "
+                                  "--method fi.samplehaku.Search.Info /";
    #if JUCE_LINUX
     if (cmd.isEmpty())   // D-Bus activation starts hakupalvelu.py, which also serves HTTP
-        cmd = "gdbus call --session --dest fi.samplehaku.Search --object-path /fi/samplehaku/SearchProvider "
-              "--method fi.samplehaku.Search.Info /";
+        cmd = "gdbus" + activate;
    #endif
+    // Under Wine the Linux service is used (same 127.0.0.1). Wine runs a native Linux program given by its
+    // Z: path, and the session bus address comes along in the environment: the same D-Bus activation.
+    if (cmd.isEmpty() && underWine())
+        for (auto* g : { "Z:\\usr\\bin\\gdbus", "Z:\\bin\\gdbus" })
+            if (juce::File (g).existsAsFile())
+            {
+                cmd = juce::String (g) + activate;
+                break;
+            }
     return cmd;
 }
 
@@ -280,6 +317,22 @@ juce::var FetchClient::removeFolder (const juce::String& path, juce::String& err
     auto* o = new juce::DynamicObject();
     o->setProperty ("path", path);
     auto r = post ("removefolder", juce::var (o), 120000, error);
+    if (error.isEmpty() && r["error"].toString().isNotEmpty())
+        error = r["error"].toString();
+    return r;
+}
+
+juce::var FetchClient::setHidden (const juce::String& path, bool hidden, juce::String& error)
+{
+    if (auto e = ensureRunning(); e.isNotEmpty())
+    {
+        error = e;
+        return {};
+    }
+    auto* o = new juce::DynamicObject();
+    o->setProperty ("path", path);
+    o->setProperty ("hidden", hidden);
+    auto r = post ("sethidden", juce::var (o), 30000, error);
     if (error.isEmpty() && r["error"].toString().isNotEmpty())
         error = r["error"].toString();
     return r;

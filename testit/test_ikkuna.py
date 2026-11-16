@@ -256,6 +256,31 @@ def script():
     check("library folders listed", len(dlg.root_rows) == len(w.tree_cache.get("", [])) or len(dlg.root_rows) > 0)
     check("each library folder has a Remove button", all(any(isinstance(c, Gtk.Button) and c.get_icon_name() == "user-trash-symbolic"
                       for c in _descendants(r)) for r in dlg.root_rows))
+    switches = [next((c for c in _descendants(r) if isinstance(c, Gtk.Switch)), None) for r in dlg.root_rows]
+    check("each library folder has a Show in search switch", all(switches))
+    if len(switches) >= 2 and all(switches):
+        hid_file = t.Path.home() / ".config/samplehaku/hidden.json"
+        hid_before = hid_file.read_bytes() if hid_file.exists() else None
+        sw = switches[-1]
+        was = sw.get_active()
+        sw.set_active(not was)                      # hide (or show) the last folder through the switch
+        yield (lambda: hid_file.exists() and (was == (b'"/' in hid_file.read_bytes()))), 30
+        check("switch writes hidden.json", hid_file.exists() and was == (b'"/' in hid_file.read_bytes()))
+        yield (lambda: len(dlg.root_rows) == len(switches)), 30
+        sw = [c for r in dlg.root_rows for c in _descendants(r) if isinstance(c, Gtk.Switch)]
+        check("hidden folder stays in Settings", len(sw) == len(switches))
+        target = next(s for s in sw if s.get_active() != was) if any(s.get_active() != was for s in sw) else None
+        if target:
+            target.set_active(was)                  # and back
+            yield (lambda: not hid_file.exists() or hid_before == hid_file.read_bytes()
+                   or (b'"/' in hid_file.read_bytes()) == (hid_before is not None and b'"/' in hid_before)), 30
+        if hid_before is None:
+            hid_file.unlink(missing_ok=True)
+        else:
+            hid_file.write_bytes(hid_before)
+        check("switch back restores", (not hid_file.exists()) or hid_file.read_bytes() == hid_before)
+        w.after_library_change(reload=True)         # the list was reloaded while folders were hidden
+        yield (lambda: w.store.get_n_items() >= 3), 60
     dlg.scales["ui_scale"].set_value(125)
     yield (lambda: dlg._timer == 0), 5
     check("UI scale saved to appearance.json", t.load_appearance()["ui_scale"] == 1.25)
@@ -274,10 +299,10 @@ def script():
     check("3 selected", len(sel) == 3 and "3 selected" in w.subtitle.get_label())
     w.act_like()
     liked = Path(os.environ["SAMPLEHAKU_COLLECTIONS"]) / "Liked Samples"
-    files = list(liked.iterdir()) if liked.exists() else []
+    files = [f for f in liked.iterdir() if not f.name.startswith(".")] if liked.exists() else []   # not the manifest
     check("L likes them all (hard links)", len(files) == 3 and all(f.stat().st_nlink >= 2 for f in files))
     w.act_like()
-    check("L again removes them", not any(liked.iterdir()))
+    check("L again removes them", not any(f for f in liked.iterdir() if not f.name.startswith(".")))
     before = [(r.inst_id, r.props.stype) for r in sel]
     ed = t.TagEditor(w, sel)
     ed.pick(0, "percussion")

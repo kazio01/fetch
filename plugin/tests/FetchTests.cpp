@@ -710,14 +710,13 @@ static void snapshot (const juce::String& out)
     }
     if (juce::SystemStats::getEnvironmentVariable ("FETCH_SNAPSHOT_PLAYER", {}) == "1")
     {
-        // the player menu (a call-out box, its own window): saved next to the snapshot as <name>-player.png
+        // the player menu (a call-out box inside the editor): saved next to the snapshot as <name>-player.png
         if (auto* b = findChild<juce::Button> (*ed, [] (auto& x) { return x.getTooltip() == "Player options"; }))
             b->triggerClick();
         for (int i = 0; i < 5; ++i)
             juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
-        auto& desk = juce::Desktop::getInstance();
-        for (int i = 0; i < desk.getNumComponents(); ++i)
-            if (auto* box = dynamic_cast<juce::CallOutBox*> (desk.getComponent (i)))
+        for (auto* c : ed->getChildren())
+            if (auto* box = dynamic_cast<juce::CallOutBox*> (c))
             {
                 auto pimg = box->createComponentSnapshot (box->getLocalBounds(), true, 1.0f);
                 juce::File pf (out.upToLastOccurrenceOf (".", false, false) + "-player.png");
@@ -726,6 +725,15 @@ static void snapshot (const juce::String& out)
                 juce::PNGImageFormat().writeImageToStream (pimg, pos);
                 std::cout << "snapshot " << pf.getFullPathName() << "\n";
             }
+    }
+    if (juce::SystemStats::getEnvironmentVariable ("FETCH_SNAPSHOT_SETTINGS", {}) == "1")
+    {
+        // Settings (a call-out inside the editor): it is in the main snapshot
+        if (auto* b = findChild<juce::Button> (*ed, [] (auto& x) { return x.getTooltip() == "Settings"; }))
+            b->triggerClick();
+        // short waits: the box closes itself after ~200 ms when the test process is not in the foreground
+        for (int i = 0; i < 12; ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (15);
     }
     auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
     juce::File f (out);

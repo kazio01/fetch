@@ -120,6 +120,52 @@ if roots.get("folders"):
         check("RemoveFolder: a subfolder of a root is not a library folder -> error", "error" in r, str(r))
     check("RemoveFolder errors change nothing", js("Folders", GLib.Variant("(s)", ("",))) == roots)
 
+otsikko("Hide a library folder (Settings switch)")
+HIDDEN = Path(os.environ.get("SAMPLEHAKU_HIDDEN", Path.home() / ".config/samplehaku/hidden.json"))
+_HIDDEN_BEFORE = HIDDEN.read_bytes() if HIDDEN.exists() else None
+
+
+def _restore_hidden() -> None:
+    try:
+        if _HIDDEN_BEFORE is None:
+            HIDDEN.unlink(missing_ok=True)
+        else:
+            HIDDEN.write_bytes(_HIDDEN_BEFORE)
+    except OSError as e:
+        print(f"hidden folders not restored: {e}")
+
+
+atexit.register(_restore_hidden)
+if need(len(roots.get("folders") or []) >= 2, "hiding needs two library folders (one stays visible)"):
+    # FETCH_TEST_HIDE=<root path>: the folder to hide (e.g. the unreachable network share, so the rest stays
+    # usable while testing on a VPN); default the smallest
+    pick = [f for f in roots["folders"] if f["path"] == os.environ.get("FETCH_TEST_HIDE", "")]
+    h = pick[0] if pick else min(roots["folders"], key=lambda f: f["count"])
+    inside = browse(folder=h["path"], limit=1)["paths"]
+    r = js("SetFolderHidden", GLib.Variant("(sb)", (h["path"], True)))
+    check("SetFolderHidden -> listed", h["path"] in r.get("hidden", []), str(r)[:120])
+    top = js("Folders", GLib.Variant("(s)", ("",)))
+    check("hidden: out of the tree, listed for Settings",
+          h["path"] not in [f["path"] for f in top["folders"]] and h["path"] in [f["path"] for f in top.get("hidden", [])])
+    check("hidden: All samples drops its samples", browse(limit=1)["total"] == TOTAL - h["count"],
+          f'{browse(limit=1)["total"]} vs {TOTAL - h["count"]}')
+    check("hidden: its folder view is empty", browse(folder=h["path"], limit=1)["total"] == 0)
+    srch = browse(text="kick", limit=200)["paths"] + browse(text="warm pad", limit=200)["paths"]
+    check("hidden: text search leaves it out", not any(p.startswith(h["path"] + "/") for p in srch))
+    out = call("Similar", GLib.Variant("(ss)", (browse(limit=1)["paths"][0], "timbre")))
+    try:
+        origs = list(json.loads((Path(out) / ".samplehaku.json").read_text()).values())
+    except (OSError, ValueError):
+        origs = []
+    check("hidden: Similar leaves it out", origs and not any(p.startswith(h["path"] + "/") for p in origs), out[:70])
+    if inside:
+        out = call("Similar", GLib.Variant("(ss)", (inside[0], "timbre")))
+        check("hidden: Similar from a hidden sample still works (results elsewhere)", not out.startswith(ERR), out[:70])
+    r = js("SetFolderHidden", GLib.Variant("(sb)", (h["path"], False)))
+    check("SetFolderHidden off -> not listed", h["path"] not in r.get("hidden", []), str(r)[:120])
+    check("shown again: All samples complete", browse(limit=1)["total"] == TOTAL)
+    check("shown again: tree as before", js("Folders", GLib.Variant("(s)", ("",)))["folders"] == roots["folders"])
+
 otsikko("Column sorting across the whole set (paging)")
 loops = browse(filters="+loop", limit=1)["total"]
 if need(loops >= 300, f"sorting across 3 pages needs 300 loops (library has {loops})"):
@@ -328,6 +374,9 @@ if check("ping", st == 200 and r.get("ok"), f"{st} {r}"):
     check("unknown request -> 404", post("/v1/nothing")[0] == 404)
     st, f = post("/v1/removefolder", {"path": "/no/such/dir"})
     check("removefolder: not a library folder -> error", st == 200 and "error" in f, str(f))
+    st, f = post("/v1/desktop", {})
+    check("desktop: GNOME light/dark for the plugin under Wine", st == 200 and set(f) == {"scheme", "accent"}
+          and f["scheme"] in ("default", "prefer-dark", "prefer-light", ""), str(f))
     st, f = post("/v1/folders", {"parent": ""})
     check("folders: same roots as D-Bus Folders", st == 200 and f == js("Folders", GLib.Variant("(s)", ("",))))
 

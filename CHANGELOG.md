@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+- Settings > Library folders: a "Show in search" switch per folder (window and plugin). Off hides the folder
+  from every search, Similar, All samples and the Folders tree while the index keeps it, e.g. a network share
+  that can't be reached right now. Stored in `~/.config/samplehaku/hidden.json`.
+- Plugin: the Settings and Player pop-overs open inside the editor with Fetch's own look. They used to be
+  separate windows in JUCE's default style (see-through, unreadable text in some hosts). The "100 %" value
+  boxes are readable in the light scheme.
+- Settings > Appearance > Style: System, Light or Dark (window and plugin, `theme` in appearance.json).
+- Windows plugin under Wine on Linux (e.g. Ableton Live): starts the Linux search service by itself, as the
+  Linux plugin does (before, the Fetch window had to be opened first), and follows GNOME's light/dark setting.
+- Fixed: with a network share offline, a Similar search failed ("No such device") on old result links, and
+  the Files extension blocked Files for seconds on every start while checking Liked samples that are links
+  to the share. On Windows, a sample liked from another drive (a symbolic link) now shows as liked at once.
+- Liked Samples opens and shuffles fast again (was seconds with likes on a network share): a liked file is
+  recognised without following its link, and hard-link likes remember their original in the collection's
+  manifest instead of a scan of the whole library after every service start.
+
 ## 0.5.0
 
 - Installers. Windows: `Fetch-Setup-<version>-windows-x64.exe` (Inno Setup, per user, Start menu entries,

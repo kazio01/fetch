@@ -177,7 +177,9 @@ def main() -> None:
         srv.wait(10)
         log.close()
         if fails:
-            print((pkg / "data" / "ci-service.log").read_text(encoding="utf-8", errors="replace")[-4000:])
+            tail = (pkg / "data" / "ci-service.log").read_text(encoding="utf-8", errors="replace")[-4000:]
+            sys.stdout.buffer.write(tail.encode("utf-8", "replace") + b"\n")   # the console is cp1252
+            sys.stdout.flush()
 
     print(f"\n{'ALL OK' if not fails else f'{fails} FAILED'}")
     sys.exit(1 if fails else 0)
